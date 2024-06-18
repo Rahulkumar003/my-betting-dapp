@@ -1,5 +1,5 @@
 #![no_std]
-use soroban_sdk::{contract, contractimpl, contracttype, Env, Symbol, Map, Vec, Address, String};
+use soroban_sdk::{contract, contractimpl, contracttype, Env, Symbol, Map, Vec, Address, token};
 
 #[contract]
 pub struct BettingContract;
@@ -16,25 +16,26 @@ pub struct Event {
     creator: Address, // Address of the event creator
 }
 
+#[contracttype]
+#[derive(Clone, PartialEq, Eq)]
+pub enum DataKey {
+    EventKey(Symbol),
+    BetKey(Symbol, Address),
+}
+
 #[contractimpl]
 impl BettingContract {
-    // Define the static creator address
-    const CREATOR_ADDRESS: &'static str = "GCEQAJPBJFSKXWVEVIVRR634QA5GHW2LCJW6O2TVVIU5T4GMBRSL2MLS";
-
-    // Helper method to get the static Address
-    fn creator_address(env: &Env) -> Address {
-        Address::from_string(&String::from(Self::CREATOR_ADDRESS))
-    }
-
+    /// creator can post new events
     pub fn create_event(
         env: Env,
+        creator: Address,
         event_id: Symbol,
         name: Symbol,
         description: Symbol,
         outcomes: Vec<Symbol>,
         betting_deadline: u64,
     ) {
-        let creator = Self::creator_address(&env); // Use the static address
+        creator.require_auth();
         let event = Event {
             name,
             description,
@@ -42,14 +43,16 @@ impl BettingContract {
             betting_deadline,
             outcome: None,
             bets: Map::new(&env),
-            creator: creator.clone(), // Store the creator's address
+            creator: creator.clone(),
         };
-        env.storage().instance().set(&event_id, &event);
+        env.storage().instance().set(&DataKey::EventKey(event_id.clone()), &event);
         env.events().publish((creator, "create_event"), (event_id,));
     }
 
+    /// user can place bets
     pub fn place_bet(env: Env, user: Address, event_id: Symbol, outcome: Symbol, amount: u64) {
-        let mut event: Event = env.storage().instance().get(&event_id).expect("Event not found");
+        user.require_auth();
+        let mut event: Event = env.storage().instance().get(&DataKey::EventKey(event_id.clone())).expect("Event not found");
         assert!(env.ledger().timestamp() < event.betting_deadline, "Betting deadline has passed");
 
         let mut user_bets = event.bets.get(user.clone()).unwrap_or(Map::new(&env));
@@ -57,35 +60,47 @@ impl BettingContract {
         user_bets.set(outcome.clone(), new_amount);
         event.bets.set(user.clone(), user_bets);
 
-        env.storage().instance().set(&event_id, &event);
+        env.storage().instance().set(&DataKey::EventKey(event_id.clone()), &event);
         env.events().publish((user, "place_bet"), (event_id, outcome, amount));
     }
 
-    pub fn update_outcome_and_distribute(env: Env, event_id: Symbol, outcome: Symbol) {
-        let invoker = env.addrress();
-        let mut event: Event = env.storage().get(&event_id).expect("Event not found");
-        assert!(invoker == Self::creator_address(&env), "Only the event creator can update the outcome");
-        
-        event.outcome = Some(outcome.clone());
+    /// update the outcome and distribute winnings
+    pub fn update_outcome_and_distribute(env: Env, creator: Address, event_id: Symbol, outcome: Symbol) {
+        creator.require_auth();
+        let mut event: Event = env.storage().instance().get(&DataKey::EventKey(event_id.clone())).expect("Event not found");
+        assert!(creator == event.creator, "Only the event creator can update the outcome");
 
+        event.outcome = Some(outcome.clone());
         let winning_outcome = outcome.clone();
 
         for (user, bets) in event.bets.iter() {
             if let Some(amount) = bets.get(winning_outcome.clone()) {
-                env.transfer(&user, amount);
+                // Assuming the token::Client is used for token transfers
+                token::Client::new(&env, &creator).transfer(&creator, &user, &amount.into());
+
                 env.events().publish((user.clone(), "distribute_winnings"), (event_id.clone(), amount));
             }
         }
 
-        env.storage().instance().remove(&event_id);
-        env.events().publish((invoker, "update_outcome_and_distribute"), (event_id, outcome));
+        env.storage().instance().remove(&DataKey::EventKey(event_id.clone()));
+        env.events().publish((creator, "update_outcome_and_distribute"), (event_id, outcome));
     }
 
+    /// get the balance of a user (this assumes a token contract with balance_of method)
     pub fn get_balance(env: Env, user: Address) -> i128 {
-        env.ledger().balance(&user)
+        // Assuming a token contract with a balance_of method
+        let token_client = token::Client::new(&env, &user);
+        token_client.balance(&user)
     }
-    
+
+    /// get an event by id
     pub fn get_event(env: Env, event_id: Symbol) -> Option<Event> {
-        env.storage().instance().get(&event_id)
+        env.storage().instance().get(&DataKey::EventKey(event_id))
+    }
+
+    /// check if a user has placed a bet on an event
+    pub fn get_bet(env: Env, event_id: Symbol, user: Address) -> Option<Map<Symbol, u64>> {
+        let event: Event = env.storage().instance().get(&DataKey::EventKey(event_id.clone())).expect("Event not found");
+        event.bets.get(user)
     }
 }
