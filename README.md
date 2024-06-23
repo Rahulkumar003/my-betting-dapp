@@ -25,14 +25,8 @@ The backend of the project is a smart contract written in Rust, which is deploye
 
    - This command will return the contract ID, which you'll need for subsequent steps.
 
-3. **Initialize the Smart Contract (if required)**
-   - If your contract requires initialization, run the following command (adjust accordingly if your contract has initialization logic):
 
-     ```
-     soroban contract invoke --id <contract_id> --fn initialize --arg '<arguments>' --network testnet
-     ```
-
-4. **Interact with the Smart Contract**
+3. **Interact with the Smart Contract**
    - You can interact with the smart contract by invoking its functions using the Soroban CLI tool. For example, to create an event:
 
      ```
